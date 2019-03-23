@@ -17,8 +17,9 @@
 package io.gatling.httpreporter
 
 import akka.http.javadsl.model.HttpResponse
-import akka.http.scaladsl.{ Http, model }
+import akka.http.scaladsl.{Http, model}
 import akka.http.scaladsl.model._
+import io.gatling.commons.stats.{KO_CLIENT, Status}
 import io.gatling.commons.util.Clock
 import io.gatling.commons.util.Collections._
 import io.gatling.core.config.GatlingConfiguration
@@ -30,21 +31,24 @@ import org.json4s._
 import org.json4s.jackson.Serialization
 
 import scala.collection.mutable
-import scala.concurrent.{ Await, Future }
-import scala.util.{ Failure, Success }
+import scala.concurrent.{Await, Future}
+import scala.util.{Failure, Success}
 
 case class UsersAndMetrics(auth: Authentication, time: Long, users: Map[String, UserBreakdown], metrics: Map[String, MetricByStatus], metricsTotal: Map[String, MetricByStatus])
 case class Percentiles(auth: Authentication, time: Long, p1: Double, p2: Double, p3: Double, p4: Double)
 case class Authentication(testId: String, token: String = "")
 
 case class HTTPData(
-    auth:                Authentication,
-    stopURL:             String,
-    reporterURL:         String,
-    requestsByPath:      mutable.Map[String, RequestMetricsBuffer],
-    usersByScenario:     mutable.Map[String, UserBreakdownBuffer],
-    requestsByPathTotal: mutable.Map[String, RequestMetricsBuffer],
-    format:              HTTPPathPattern
+    auth:                       Authentication,
+    stopURL:                    String,
+    reporterURL:                String,
+    var requestsByPath:         mutable.Map[String, RequestMetricsBuffer],
+    usersByScenario:            mutable.Map[String, UserBreakdownBuffer],
+    requestsByPathTotal:        mutable.Map[String, RequestMetricsBuffer],
+    format:                     HTTPPathPattern,
+    requestsByPathByTimeBucket: mutable.Map[Long, mutable.Map[String, RequestMetricsBuffer]] = mutable.Map(),
+    var bucketTimes:            List[Long] = List(),
+    var bucketTimesToResend:    mutable.Set[Long] = mutable.Set()
 ) extends DataWriterData
 
 private[gatling] class HTTPDataWriter(clock: Clock, configuration: GatlingConfiguration) extends DataWriter[HTTPData] with NameGen {
@@ -83,18 +87,29 @@ private[gatling] class HTTPDataWriter(clock: Clock, configuration: GatlingConfig
   }
 
   def onFlush(data: HTTPData): Unit = {
-    import data._
+    val time = clock.nowMillis
+    //Update the list of bucket time
+    data.bucketTimes = time +: data.bucketTimes
 
-    val requestsMetrics = requestsByPath.mapValues(_.metricsByStatus).toMap
-    val usersBreakdowns = usersByScenario.mapValues(_.breakDown).toMap
+    val requestsMetrics = data.requestsByPath.mapValues(_.metricsByStatus).toMap
+    val usersBreakdowns = data.usersByScenario.mapValues(_.breakDown).toMap
+    val requestsMetricsTotal = data.requestsByPathTotal.mapValues(_.metricsByStatus).toMap
 
-    val requestsMetricsTotal = requestsByPathTotal.mapValues(_.metricsByStatus).toMap
-
+    // Save the histogram of the current bucket in the bucket map
+    data.requestsByPathByTimeBucket(time) = data.requestsByPath
     // Reset all metrics
-    requestsByPath.foreach { case (_, buff) => buff.clear() }
-    requestsByPathTotal.foreach { case (_, buff) => buff.clear() }
+    data.requestsByPath = mutable.Map.empty[String, RequestMetricsBuffer]
+    //data.requestsByPath.foreach { case (_, buff) => buff.clear() }
 
-    sendMetricsToHTTP(data, requestsMetrics, usersBreakdowns, requestsMetricsTotal)
+    val metrics = UsersAndMetrics(data.auth, time, usersBreakdowns, requestsMetrics, requestsMetricsTotal)
+    //Update the previous buckets if any.
+    val metricsToUpdate = data.bucketTimesToResend.map(bucketTime => {
+      val requestsByPath = data.requestsByPathByTimeBucket(bucketTime)
+      val bucketRequestsMetrics = requestsByPath.mapValues(_.metricsByStatus).toMap
+      UsersAndMetrics(data.auth, bucketTime, null, bucketRequestsMetrics, null)
+    }).toList
+    data.bucketTimesToResend.clear()
+    sendMetricsToHTTP(data, metrics :: metricsToUpdate)
   }
 
   private def onUserMessage(userMessage: UserMessage, data: HTTPData): Unit = {
@@ -103,21 +118,44 @@ private[gatling] class HTTPDataWriter(clock: Clock, configuration: GatlingConfig
     usersByScenario("allRequests").add(userMessage)
   }
 
-  private def onResponseMessage(response: ResponseMessage, data: HTTPData): Unit = {
 
-    val responseTime = ResponseTimings.responseTime(response.startTimestamp, response.endTimestamp)
-    if (!configuration.data.http.light) {
-      data.requestsByPath.getOrElseUpdate(response.scenario, newResponseMetricsBuffer).add(response.status, responseTime)
-      data.requestsByPathTotal.getOrElseUpdate(response.scenario, newResponseMetricsBuffer).add(response.status, responseTime)
+  private def onResponseMessage(response: ResponseMessage, data: HTTPData): Unit = {
+    //Improve stats by tracking gatling timeouts
+    val status = if(response.message.isDefined && response.message.get.startsWith("i.g.h.c.i.RequestTimeoutException")){
+      KO_CLIENT
+    } else {
+      response.status
     }
-    data.requestsByPath.getOrElseUpdate("allRequests", newResponseMetricsBuffer).add(response.status, responseTime)
-    data.requestsByPathTotal.getOrElseUpdate("allRequests", newResponseMetricsBuffer).add(response.status, responseTime)
+    val responseTime = ResponseTimings.responseTime(response.startTimestamp, response.endTimestamp)
+    //We have a big response time. We might need to impact the previous bucket
+    //for example if we receive a 10sec responseTime, we also need to update the previous bucket max latencies
+    val halfPeriod = configuration.data.http.writePeriod._1 / 2
+    if(responseTime > halfPeriod){
+      //If the request starts before the middle of the previous bucket, we add it to this bucket
+      data.bucketTimes.iterator.takeWhile(bucketEndTime => response.startTimestamp < bucketEndTime - halfPeriod).foreach(bucketTime => {
+        log.debug("slow request detected. Update previous bucket for more accurate real-time results")
+        data.bucketTimesToResend.add(bucketTime)
+        if (!configuration.data.http.light) {
+          data.requestsByPathByTimeBucket(bucketTime).getOrElseUpdate(response.scenario, newResponseMetricsBuffer).add(status, responseTime)
+        }
+        data.requestsByPathByTimeBucket(bucketTime).getOrElseUpdate("allRequests", newResponseMetricsBuffer).add(status, responseTime)
+      })
+    }
+    //Update the current bucket.
+    if (!configuration.data.http.light) {
+      data.requestsByPath.getOrElseUpdate(response.scenario, newResponseMetricsBuffer).add(status, responseTime)
+      data.requestsByPathTotal.getOrElseUpdate(response.scenario, newResponseMetricsBuffer).add(status, responseTime)
+    }
+    data.requestsByPath.getOrElseUpdate("allRequests", newResponseMetricsBuffer).add(status, responseTime)
+    data.requestsByPathTotal.getOrElseUpdate("allRequests", newResponseMetricsBuffer).add(status, responseTime)
   }
 
-  override def onMessage(message: LoadEventMessage, data: HTTPData): Unit = message match {
-    case user: UserMessage         => onUserMessage(user, data)
-    case response: ResponseMessage => onResponseMessage(response, data)
-    case _                         =>
+  override def onMessage(message: LoadEventMessage, data: HTTPData): Unit = {
+    message match {
+      case user: UserMessage         => onUserMessage(user, data)
+      case response: ResponseMessage => onResponseMessage(response, data)
+      case _                         =>
+    }
   }
 
   override def onCrash(cause: String, data: HTTPData): Unit = {
@@ -143,14 +181,11 @@ private[gatling] class HTTPDataWriter(clock: Clock, configuration: GatlingConfig
 
   private def sendMetricsToHTTP(
     data:                 HTTPData,
-    requestsMetrics:      Map[String, MetricByStatus],
-    userBreakdowns:       Map[String, UserBreakdown],
-    requestsMetricsTotal: Map[String, MetricByStatus]
+    userAndMetrics:       List[UsersAndMetrics]
   ): Unit = {
-    val metrics = UsersAndMetrics(data.auth, clock.nowSeconds, userBreakdowns, requestsMetrics, requestsMetricsTotal)
-    val userAndMetrics = Serialization.write(metrics)
+    val metricsSerialized = Serialization.write(userAndMetrics)
 
-    val reqEntity = HttpEntity(ContentTypes.`application/json`, userAndMetrics)
+    val reqEntity = HttpEntity(ContentTypes.`application/json`, metricsSerialized)
 
     val responseFuture: Future[HttpResponse] = Http().singleRequest(HttpRequest(
       uri = data.reporterURL,

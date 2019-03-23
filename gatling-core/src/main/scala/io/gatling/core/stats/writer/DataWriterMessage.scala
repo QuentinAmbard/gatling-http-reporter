@@ -54,6 +54,13 @@ case class UserMessage(
     timestamp: Long
 ) extends LoadEventMessage
 
+case class RequestStart(
+  session:   Session,
+  fullRequestName: String,
+  timestamp: Long
+) extends LoadEventMessage
+
+
 case class ResponseMessage(
     scenario:       String,
     userId:         Long,

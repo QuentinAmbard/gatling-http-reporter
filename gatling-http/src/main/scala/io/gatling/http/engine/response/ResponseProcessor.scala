@@ -41,6 +41,7 @@ case class Crash(error: String) extends ProcessorResult
 
 trait ResponseProcessor {
   def onComplete(result: HttpResult): Unit
+  def onStart(startTimestamp: Long) = {}
 }
 
 class DefaultResponseProcessor(
@@ -50,6 +51,12 @@ class DefaultResponseProcessor(
     nextExecutor:     NextExecutor,
     defaultCharset:   Charset
 ) extends ResponseProcessor with StrictLogging with NameGen {
+
+
+  override def onStart(startTimestamp: Long): Unit = {
+    val clientRequest = tx.request.clientRequest
+    statsProcessor.reportStatsStart(tx.fullRequestName, clientRequest, tx.currentSession, startTimestamp)
+  }
 
   def onComplete(result: HttpResult): Unit =
     result match {

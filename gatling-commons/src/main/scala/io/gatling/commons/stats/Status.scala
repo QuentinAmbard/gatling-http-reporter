@@ -27,3 +27,4 @@ object Status {
 sealed abstract class Status(val name: String)
 case object OK extends Status("OK")
 case object KO extends Status("KO")
+case object KO_CLIENT extends Status("KO_CLIENT")

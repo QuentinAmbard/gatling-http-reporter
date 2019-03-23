@@ -10,7 +10,7 @@ object Engine extends App {
     .resultsDirectory(IDEPathHelper.resultsDirectory.toString)
     .binariesDirectory(IDEPathHelper.mavenBinariesDirectory.toString)
     .noReports()
-    .runDescription("1").build
+    .runDescription("7|7|TEST_TOKEN").build
 
 
   Gatling.fromMap(props)

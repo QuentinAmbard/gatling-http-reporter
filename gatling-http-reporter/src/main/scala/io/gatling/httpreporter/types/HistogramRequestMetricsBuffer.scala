@@ -16,10 +16,9 @@
 
 package io.gatling.httpreporter.types
 
-import io.gatling.commons.stats.{ KO, OK, Status }
+import io.gatling.commons.stats.{KO, KO_CLIENT, OK, Status}
 import io.gatling.core.config.GatlingConfiguration
-
-import org.HdrHistogram.{ AbstractHistogram, IntCountsHistogram }
+import org.HdrHistogram.{AbstractHistogram, IntCountsHistogram}
 
 class HistogramRequestMetricsBuffer(configuration: GatlingConfiguration) extends RequestMetricsBuffer {
 
@@ -30,6 +29,7 @@ class HistogramRequestMetricsBuffer(configuration: GatlingConfiguration) extends
 
   private val okHistogram: AbstractHistogram = new IntCountsHistogram(2)
   private val koHistogram: AbstractHistogram = new IntCountsHistogram(2)
+  private val koClientHistogram: AbstractHistogram = new IntCountsHistogram(2)
   private val allHistogram: AbstractHistogram = new IntCountsHistogram(2)
 
   override def add(status: Status, time: Long): Unit = {
@@ -39,12 +39,14 @@ class HistogramRequestMetricsBuffer(configuration: GatlingConfiguration) extends
     status match {
       case OK => okHistogram.recordValue(recordableTime)
       case KO => koHistogram.recordValue(recordableTime)
+      case KO_CLIENT => koClientHistogram.recordValue(recordableTime)
     }
   }
 
   override def clear(): Unit = {
     okHistogram.reset()
     koHistogram.reset()
+    koClientHistogram.reset()
     allHistogram.reset()
   }
 
@@ -52,6 +54,7 @@ class HistogramRequestMetricsBuffer(configuration: GatlingConfiguration) extends
     MetricByStatus(
       ok = metricsOfHistogram(okHistogram),
       ko = metricsOfHistogram(koHistogram),
+      koClient = metricsOfHistogram(koClientHistogram),
       all = metricsOfHistogram(allHistogram)
     )
 

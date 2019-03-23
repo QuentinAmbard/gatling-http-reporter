@@ -48,6 +48,8 @@ class GatlingHttpListener(tx: HttpTx, coreComponents: CoreComponents, responsePr
     if (!init) {
       init = true
       responseBuilder.updateStartTimestamp()
+      //OCTOSHIELD EXTRA
+      //responseProcessor.onStart(responseBuilder.startTimestamp)
       // [fl]
       //
       // [fl]

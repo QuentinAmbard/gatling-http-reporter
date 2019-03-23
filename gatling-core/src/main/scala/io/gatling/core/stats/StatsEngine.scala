@@ -53,6 +53,8 @@ trait StatsEngine {
   //
   //
   // [fl]
+  def logStart(requestStart: RequestStart): Unit = {
+  }
 
   def logResponse(
     session:        Session,
@@ -121,6 +123,7 @@ class DataWritersStatsEngine(dataWriters: Seq[ActorRef], system: ActorSystem, cl
 
   override def logUser(userMessage: UserMessage): Unit = dispatch(userMessage)
 
+  override def logStart(requestStart: RequestStart): Unit = dispatch(requestStart)
   // [fl]
   //
   //

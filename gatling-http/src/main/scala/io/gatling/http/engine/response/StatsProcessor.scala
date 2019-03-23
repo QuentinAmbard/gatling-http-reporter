@@ -18,16 +18,16 @@ package io.gatling.http.engine.response
 
 import java.nio.charset.Charset
 
-import io.gatling.commons.stats.{ KO, Status }
+import io.gatling.commons.stats.{KO, Status}
 import io.gatling.commons.util.StringHelper.Eol
 import io.gatling.core.session.Session
 import io.gatling.core.stats.StatsEngine
 import io.gatling.http.client.Request
-import io.gatling.http.response.{ HttpResult, Response }
+import io.gatling.http.response.{HttpResult, Response}
 import io.gatling.http.util._
 import io.gatling.netty.util.ahc.StringBuilderPool
-
 import com.typesafe.scalalogging.StrictLogging
+import io.gatling.core.stats.writer.RequestStart
 
 sealed trait StatsProcessor {
   def reportStats(
@@ -38,6 +38,13 @@ sealed trait StatsProcessor {
     result:          HttpResult,
     errorMessage:    Option[String]
   ): Unit
+
+  def reportStatsStart(
+     fullRequestName: String,
+     request:         Request,
+     session:         Session,
+     start: Long
+   ): Unit = {}
 }
 
 object NoopStatsProcessor extends StatsProcessor {
@@ -78,6 +85,15 @@ class DefaultStatsProcessor(
       },
       errorMessage
     )
+  }
+
+  override def reportStatsStart(
+                        fullRequestName: String,
+                        request:         Request,
+                        session:         Session,
+                        start: Long
+                      ): Unit = {
+      statsEngine.logStart(RequestStart(session, fullRequestName, start))
   }
 
   private def logTx0(

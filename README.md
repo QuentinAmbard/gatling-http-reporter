@@ -1,3 +1,7 @@
+#Gatling for with http reporter.
+publish locally on .m2 with  sbt publishM2     
+deployed as version "3.0.4-http-reporter-SNAPSHOT"
+
 # Gatling [![Build Status](https://travis-ci.org/gatling/gatling.svg?branch=master)](https://travis-ci.org/gatling/gatling) [![Maven Central](https://maven-badges.herokuapp.com/maven-central/io.gatling/gatling-core/badge.svg)](https://maven-badges.herokuapp.com/maven-central/io.gatling/gatling-core/)
 
 ## What is Gatling ?
